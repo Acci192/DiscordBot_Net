@@ -12,9 +12,9 @@ namespace VoteBot_Discord.Modules
     public class FunCommands : ModuleBase<SocketCommandContext>
     {
         private readonly DiscordSocketClient _client;
-        private readonly TestService _test;
+        private readonly VoteService _test;
 
-        public FunCommands(DiscordSocketClient client, TestService test)
+        public FunCommands(DiscordSocketClient client, VoteService test)
         {
             _client = client;
             _test = test;

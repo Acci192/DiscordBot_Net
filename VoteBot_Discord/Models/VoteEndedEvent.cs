@@ -6,9 +6,9 @@ namespace VoteBot_Discord.Models
 {
     public class VoteEndedEvent : Event
     {
-        public string Id { get; set; }
+        public Guid Id { get; set; }
 
-        public VoteEndedEvent(string id)
+        public VoteEndedEvent(Guid id)
         {
             Type = EventType.VoteEnded;
             Id = id;

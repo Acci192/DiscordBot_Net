@@ -12,12 +12,12 @@ namespace VoteBot_Discord.Modules
     public class VoteCommands : ModuleBase<SocketCommandContext>
     {
         private readonly DiscordSocketClient _client;
-        private readonly TestService _test;
+        private readonly VoteService _voteService;
 
-        public VoteCommands(DiscordSocketClient client, TestService test)
+        public VoteCommands(DiscordSocketClient client, VoteService voteService)
         {
             _client = client;
-            _test = test;
+            _voteService = voteService;
         }
 
         [Command("create")]
@@ -25,23 +25,25 @@ namespace VoteBot_Discord.Modules
         public async Task CreateVoteAsync([Summary("Name of the vote")] string name,
             [Summary("Options to add. Can be more than one (separated with spaces). If the option contains spaces use \"\" to surround the option")] params string[] options)
         {
-            if (_test.CanCreateVote(name))
+            var vote = _voteService.GetVote(name);
+            if(vote != null)
             {
-                var e = new VoteCreatedEvent(name, Context.User.Id);
-                _test.HandleEvent(e);
-
-                foreach (var o in options)
-                {
-                    if (_test.CanAddOption(name, o))
-                    {
-                        _test.HandleEvent(new OptionAddedEvent(name, o));
-                    }
-                }
-                var v = _test.GetVote(name);
-                await ReplyAsync($"New Vote ({name}) created by {Context.User.Username}\n" +
-                    $"{v.ShowOptions()}.\n" +
-                    $"It will end at {v.EndTime.ToShortTimeString()}");
+                await ReplyAsync($"A vote with that name is currently ongoing");
+                return;
             }
+
+            var e = new VoteCreatedEvent(Guid.NewGuid(), name, Context.User.Id);
+            _voteService.HandleEvent(e);
+            foreach(var o in options)
+            {
+                if (!_voteService.GetVote(e.Id).ContainsOption(o))
+                {
+                    _voteService.HandleEvent(new OptionAddedEvent(e.Id, o));
+                }
+            }
+            var v = _voteService.GetVote(e.Id);
+            await ReplyAsync($"New Vote ({name}) created by {Context.User.Username}\n" +
+                    $"{v.GetInformation()}.\n");
         }
 
         [Command("addoption")]
@@ -49,14 +51,14 @@ namespace VoteBot_Discord.Modules
         public async Task AddOptions([Summary("Name of the vote")] string name,
             [Summary("Options to add. Can be more than one (separated with spaces). If the option contains spaces use \"\" to surround the option")] params string[] options)
         {
-            if (_test.CanCreateVote(name))
+            var vote = _voteService.GetVote(name);
+            if (vote == null)
             {
                 await ReplyAsync($"There is no vote with that name");
                 return;
             }
             // TODO Fix this bad code
-            var vote = _test.GetVote(name);
-            if (vote.Owner != Context.User.Id)
+            if (!vote.IsOwner(Context.User.Id))
             {
                 await ReplyAsync($"{Context.User.Mention} you are not the owner of this vote");
                 return;
@@ -64,14 +66,14 @@ namespace VoteBot_Discord.Modules
 
             foreach (var o in options)
             {
-                if (_test.CanAddOption(name, o))
+                if (!_voteService.GetVote(name).ContainsOption(o))
                 {
-                    _test.HandleEvent(new OptionAddedEvent(name, o));
+                    _voteService.HandleEvent(new OptionAddedEvent(vote.GetId(), o));
                 }
             }
 
-            var v = _test.GetVote(name);
-            await ReplyAsync($"Options added to {name}\n{v.ShowOptions()}");
+            
+            await ReplyAsync($"Options added to {name}\n{_voteService.GetVote(name).GetInformation()}");
         }
 
         [Command("vote")]
@@ -81,20 +83,26 @@ namespace VoteBot_Discord.Modules
         {
             if (Context.IsPrivate)
             {
-                if (_test.CanCreateVote(name))
+                var vote = _voteService.GetVote(name);
+                if (vote == null)
                 {
                     await ReplyAsync($"There is no vote with that name");
                     return;
                 }
-                if (_test.CanPlaceVote(name, Context.User.Id, option))
+                if (vote.UserVoted(Context.User.Id))
                 {
-                    _test.HandleEvent(new MemberVotedEvent(name, option, Context.User.Id));
-                    await ReplyAsync($"Your vote on {option} has been registred");
+                    await ReplyAsync($"You have already voted");
+                    return;
                 }
-                else
+                if (!vote.ContainsOption(option))
                 {
-                    await ReplyAsync($"Your vote has not been registred, either you already voted or the option is not available");
+                    await ReplyAsync($"That is an invalid option");
+                    return;
                 }
+
+                _voteService.HandleEvent(new MemberVotedEvent(vote.GetId(), option, Context.User.Id));
+                await ReplyAsync($"Your vote on {option} has been registred");
+
             }
             else
             {
@@ -107,14 +115,15 @@ namespace VoteBot_Discord.Modules
         [Summary("Remove your vote")]
         public async Task RemoveVoteAsync([Summary("Name of the vote")] string name)
         {
-            if (_test.CanCreateVote(name))
+            var vote = _voteService.GetVote(name);
+            if (vote == null)
             {
                 await ReplyAsync($"There is no vote with that name");
                 return;
             }
-            if (_test.CanRemoveVote(name, Context.User.Id))
+            if (vote.UserVoted(Context.User.Id))
             {
-                _test.HandleEvent(new MemberUnvotedEvent(name, Context.User.Id));
+                _voteService.HandleEvent(new MemberUnvotedEvent(vote.GetId(), Context.User.Id));
                 await ReplyAsync("Your vote has been removed, please vote again");
             }
         }
@@ -123,36 +132,35 @@ namespace VoteBot_Discord.Modules
         [Summary("End the vote")]
         public async Task EndVoteAsync([Summary("Name of the vote")] string name)
         {
-            if (_test.CanCreateVote(name))
+            var vote = _voteService.GetVote(name);
+            if (vote == null)
             {
                 await ReplyAsync($"There is no vote with that name");
                 return;
             }
-            var vote = _test.GetVote(name);
-            if (vote.Owner != Context.User.Id)
+
+            if (!vote.IsOwner(Context.User.Id))
             {
                 await ReplyAsync($"{Context.User.Mention} you are not the owner of this vote");
                 return;
             }
 
-            await ReplyAsync($"{vote.ShowResults()}");
-            _test.HandleEvent(new VoteEndedEvent(name));
+            await ReplyAsync($"{vote.GetResults()}");
+            _voteService.HandleEvent(new VoteEndedEvent(vote.GetId()));
         }
 
         [Command("show")]
         [Summary("Show information about the vote")]
         public async Task ShowInformationAsync([Summary("Name of the vote")] string name)
         {
-            if (_test.CanCreateVote(name))
+            var vote = _voteService.GetVote(name);
+            if (vote == null)
             {
                 await ReplyAsync($"There is no vote with that name");
                 return;
             }
 
-            var vote = _test.GetVote(name);
-            await ReplyAsync($"Name of the Vote: {vote.Id}\n" +
-                $"{vote.ShowOptions()}\n" +
-                $"It will end at {vote.EndTime.ToShortTimeString()}");
+            await ReplyAsync(vote.GetInformation());
         }
 
         [Command("adddescription")]
@@ -160,16 +168,17 @@ namespace VoteBot_Discord.Modules
         public async Task AddDescriptionAsync([Summary("Name of the vote")] string name,
             [Remainder][Summary("Description to add to the vote")] string description)
         {
-            if (_test.CanCreateVote(name))
+            var vote = _voteService.GetVote(name);
+            if (vote == null)
             {
                 await ReplyAsync($"There is no vote with that name");
                 return;
             }
 
-            _test.HandleEvent(new DescriptionAddedEvent(name, description));
-            var vote = _test.GetVote(name);
+            _voteService.HandleEvent(new DescriptionAddedEvent(vote.GetId(), description));
+            vote = _voteService.GetVote(name);
             await ReplyAsync($"Vote has been updated\n" +
-                $"{vote.ShowInformation()}");
+                $"{vote.GetInformation()}");
         }
 
         [Command("addtime")]
@@ -177,22 +186,23 @@ namespace VoteBot_Discord.Modules
         public async Task AddTimeAsync([Summary("Name of the vote")] string name,
             [Summary("Minutes to add")] int minutes)
         {
-            if (_test.CanCreateVote(name))
+            var vote = _voteService.GetVote(name);
+            if (vote == null)
             {
                 await ReplyAsync($"There is no vote with that name");
                 return;
             }
-            var vote = _test.GetVote(name);
-            if (vote.Owner != Context.User.Id)
+
+            if (!vote.IsOwner(Context.User.Id))
             {
                 await ReplyAsync($"{Context.User.Mention} you are not the owner of this vote");
                 return;
             }
 
-            _test.HandleEvent(new TimeAddedEvent(name, minutes));
-            vote = _test.GetVote(name);
+            _voteService.HandleEvent(new TimeAddedEvent(vote.GetId(), minutes));
+            vote = _voteService.GetVote(name);
             await ReplyAsync($"Vote has been updated\n" +
-                $"{vote.ShowInformation()}");
+                $"{vote.GetInformation()}");
         }
     }
 }

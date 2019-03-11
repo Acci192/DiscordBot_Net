@@ -49,7 +49,7 @@ namespace VoteBot_Discord
                 .AddSingleton<CommandService>()
                 .AddSingleton<CommandHandler>()
                 .AddSingleton<HttpClient>()
-                .AddSingleton<TestService>()
+                .AddSingleton<VoteService>()
                 .BuildServiceProvider();
         }
     }

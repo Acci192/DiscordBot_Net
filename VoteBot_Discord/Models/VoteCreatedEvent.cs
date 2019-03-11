@@ -6,13 +6,15 @@ namespace VoteBot_Discord.Models
 {
     public class VoteCreatedEvent : Event
     {
-        public string Id { get; set; }
+        public Guid Id { get; set; }
+        public string Name { get; set; }
         public ulong Owner { get; set; }
 
-        public VoteCreatedEvent(string id, ulong owner)
+        public VoteCreatedEvent(Guid id, string name, ulong owner)
         {
             Type = EventType.VotedCreated;
             Id = id;
+            Name = name;
             Owner = owner;
         }
     }

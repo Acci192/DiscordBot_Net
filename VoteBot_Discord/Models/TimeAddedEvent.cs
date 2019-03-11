@@ -6,10 +6,10 @@ namespace VoteBot_Discord.Models
 {
     public class TimeAddedEvent : Event
     {
-        public string Id { get; set; }
+        public Guid Id { get; set; }
         public int MinutesAdded { get; set; }
 
-        public TimeAddedEvent(string id, int minutesAdded)
+        public TimeAddedEvent(Guid id, int minutesAdded)
         {
             Type = EventType.TimeAdded;
             Id = id;
