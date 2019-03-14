@@ -2,9 +2,10 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace VoteBot_Discord.Models
+namespace VoteBot_Discord.Events
 {
-    interface IEvent
+    public class PollEnded
     {
+        public Guid Id;
     }
 }

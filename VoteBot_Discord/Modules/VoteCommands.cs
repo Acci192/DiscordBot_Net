@@ -2,9 +2,12 @@
 using Discord.WebSocket;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using VoteBot_Discord.Models;
+using VoteBot_Discord.Commands;
+using VoteBot_Discord.Exceptions;
+using VoteBot_Discord.CQRS;
 using VoteBot_Discord.Services;
 
 namespace VoteBot_Discord.Modules
@@ -21,188 +24,211 @@ namespace VoteBot_Discord.Modules
         }
 
         [Command("create")]
+        [Alias("c")]
         [Summary("Creates a new vote")]
         public async Task CreateVoteAsync([Summary("Name of the vote")] string name,
             [Summary("Options to add. Can be more than one (separated with spaces). If the option contains spaces use \"\" to surround the option")] params string[] options)
-        {
-            var vote = _voteService.GetVote(name);
-            if(vote != null)
+        {           
+            if (_voteService.ActivePollQueries.GetPollId(name) == Guid.Empty)
             {
-                await ReplyAsync($"A vote with that name is currently ongoing");
-                return;
-            }
-
-            var e = new VoteCreatedEvent(Guid.NewGuid(), name, Context.User.Id);
-            _voteService.HandleEvent(e);
-            foreach(var o in options)
-            {
-                if (!_voteService.GetVote(e.Id).ContainsOption(o))
+                var id = Guid.NewGuid();
+                _voteService.SendCommand(new CreatePoll
                 {
-                    _voteService.HandleEvent(new OptionAddedEvent(e.Id, o));
-                }
+                    Id = id,
+                    Channel = Context.Channel.Id,
+                    Owner = Context.User.Id,
+                    Name = name
+                });
+
+                if(options.Length > 0)
+                    _voteService.SendCommand(new AddOptions
+                    {
+                        Id = id,
+                        User = Context.User.Id,
+                        Options = options.ToList()
+                    });
+                await ReplyAsync(_voteService.PollInformationQueries.GetInformation(id));
             }
-            var v = _voteService.GetVote(e.Id);
-            await ReplyAsync($"New Vote ({name}) created by {Context.User.Username}\n" +
-                    $"{v.GetInformation()}.\n");
+            else
+            {
+                await ReplyAsync("A vote with that name is already active");
+            }
         }
 
         [Command("addoption")]
+        [Alias("ao")]
         [Summary("Add options to a vote")]
         public async Task AddOptions([Summary("Name of the vote")] string name,
             [Summary("Options to add. Can be more than one (separated with spaces). If the option contains spaces use \"\" to surround the option")] params string[] options)
         {
-            var vote = _voteService.GetVote(name);
-            if (vote == null)
+            var pollId = _voteService.ActivePollQueries.GetPollId(name);
+            if(pollId != Guid.Empty)
             {
-                await ReplyAsync($"There is no vote with that name");
-                return;
-            }
-            // TODO Fix this bad code
-            if (!vote.IsOwner(Context.User.Id))
-            {
-                await ReplyAsync($"{Context.User.Mention} you are not the owner of this vote");
-                return;
-            }
-
-            foreach (var o in options)
-            {
-                if (!_voteService.GetVote(name).ContainsOption(o))
+                try
                 {
-                    _voteService.HandleEvent(new OptionAddedEvent(vote.GetId(), o));
+                    _voteService.SendCommand(new AddOptions
+                    {
+                        Id = pollId,
+                        User = Context.User.Id,
+                        Options = options.ToList()
+                    });
+                    await ReplyAsync(_voteService.PollInformationQueries.GetInformation(pollId));
+                }
+                catch (NoOptionAdded e)
+                {
+                    await ReplyAsync("No unique option was added");
                 }
             }
-
-            
-            await ReplyAsync($"Options added to {name}\n{_voteService.GetVote(name).GetInformation()}");
+            else
+            {
+                await ReplyAsync($"There is no active vote with that name");
+            }
         }
 
         [Command("vote")]
+        [Alias("v")]
         [Summary("Place your vote, (PRIVATE MESSAGE)")]
         public async Task PlaceVoteAsync([Summary("Name of the vote")] string name,
             [Summary("Option to vote on")] string option)
         {
             if (Context.IsPrivate)
             {
-                var vote = _voteService.GetVote(name);
-                if (vote == null)
+                var pollId = _voteService.ActivePollQueries.GetPollId(name);
+                if (pollId != Guid.Empty)
                 {
-                    await ReplyAsync($"There is no vote with that name");
-                    return;
+                    try
+                    {
+                        _voteService.SendCommand(new PlaceVote
+                        {
+                            Id = pollId,
+                            User = Context.User.Id,
+                            Option = option
+                        });
+                        await ReplyAsync($"Your vote on <{option}> has been registered. Thank you for your participation!");
+                    }
+                    catch (UserAlreadyVoted)
+                    {
+                        await ReplyAsync("You have already voted");
+                    }
+                    catch (InvalidOption)
+                    {
+                        await ReplyAsync("No such option available");
+                    }
                 }
-                if (vote.UserVoted(Context.User.Id))
+                else
                 {
-                    await ReplyAsync($"You have already voted");
-                    return;
+                    await ReplyAsync($"There is no active vote with that name");
                 }
-                if (!vote.ContainsOption(option))
-                {
-                    await ReplyAsync($"That is an invalid option");
-                    return;
-                }
-
-                _voteService.HandleEvent(new MemberVotedEvent(vote.GetId(), option, Context.User.Id));
-                await ReplyAsync($"Your vote on {option} has been registred");
-
             }
             else
             {
                 await Context.Message.DeleteAsync();
-                await ReplyAsync("Send me a PM, you don't want to show your vote. (Thank me later)");
+                await ReplyAsync($"{Context.User.Mention} Send me a PM, you don't want to show your vote. (Thank me later)");
             }
         }
 
         [Command("unvote")]
+        [Alias("uv")]
         [Summary("Remove your vote")]
         public async Task RemoveVoteAsync([Summary("Name of the vote")] string name)
         {
-            var vote = _voteService.GetVote(name);
-            if (vote == null)
+            var pollId = _voteService.ActivePollQueries.GetPollId(name);
+            if (pollId != Guid.Empty)
             {
-                await ReplyAsync($"There is no vote with that name");
-                return;
+                try
+                {
+                    _voteService.SendCommand(new RemoveVote
+                    {
+                        Id = pollId,
+                        User = Context.User.Id
+                    });
+                    await ReplyAsync($"Your vote has been unregistered. Please place another vote!");
+                }
+                catch (UserHasNotVoted)
+                {
+                    await ReplyAsync("You have not placed a vote yet");
+                }
             }
-            if (vote.UserVoted(Context.User.Id))
+            else
             {
-                _voteService.HandleEvent(new MemberUnvotedEvent(vote.GetId(), Context.User.Id));
-                await ReplyAsync("Your vote has been removed, please vote again");
+                await ReplyAsync($"There is no active vote with that name");
             }
         }
 
         [Command("end")]
+        [Alias("e")]
         [Summary("End the vote")]
         public async Task EndVoteAsync([Summary("Name of the vote")] string name)
         {
-            var vote = _voteService.GetVote(name);
-            if (vote == null)
+            var pollId = _voteService.ActivePollQueries.GetPollId(name);
+            if (pollId != Guid.Empty)
             {
-                await ReplyAsync($"There is no vote with that name");
-                return;
+                try
+                {
+                    _voteService.SendCommand(new EndPoll
+                    {
+                        Id = pollId,
+                        User = Context.User.Id
+                    });
+                    if (_client.GetChannel(_voteService.PollInformationQueries.GetPollChannel(pollId)) is SocketTextChannel chan)
+                    {
+                        await chan.SendMessageAsync($"{_voteService.PollInformationQueries.GetResults(pollId)}");
+                    }
+                }
+                catch (UnauthorizedUser)
+                {
+                    await ReplyAsync($"{Context.User.Mention} you are not the owner of this vote. Please be patient!");
+                }
             }
-
-            if (!vote.IsOwner(Context.User.Id))
+            else
             {
-                await ReplyAsync($"{Context.User.Mention} you are not the owner of this vote");
-                return;
+                await ReplyAsync($"There is no active vote with that name");
             }
-
-            await ReplyAsync($"{vote.GetResults()}");
-            _voteService.HandleEvent(new VoteEndedEvent(vote.GetId()));
         }
 
         [Command("show")]
         [Summary("Show information about the vote")]
         public async Task ShowInformationAsync([Summary("Name of the vote")] string name)
         {
-            var vote = _voteService.GetVote(name);
-            if (vote == null)
+            var pollId = _voteService.ActivePollQueries.GetPollId(name);
+            if(pollId != Guid.Empty)
             {
-                await ReplyAsync($"There is no vote with that name");
-                return;
+                await ReplyAsync(_voteService.PollInformationQueries.GetInformation(pollId));
             }
-
-            await ReplyAsync(vote.GetInformation());
+            else
+            {
+                await ReplyAsync($"There is no active vote with that name");
+            }
         }
 
         [Command("adddescription")]
+        [Alias("ad")]
         [Summary("Add a description to the vote")]
         public async Task AddDescriptionAsync([Summary("Name of the vote")] string name,
             [Remainder][Summary("Description to add to the vote")] string description)
         {
-            var vote = _voteService.GetVote(name);
-            if (vote == null)
+            var pollId = _voteService.ActivePollQueries.GetPollId(name);
+            if (pollId != Guid.Empty)
             {
-                await ReplyAsync($"There is no vote with that name");
-                return;
+                try
+                {
+                    _voteService.SendCommand(new AddDescription
+                    {
+                        Id = pollId,
+                        User = Context.User.Id,
+                        Description = description
+                    });
+                    await ReplyAsync(_voteService.PollInformationQueries.GetInformation(pollId));
+                }
+                catch (UnauthorizedUser)
+                {
+                    await ReplyAsync($"{Context.User.Mention} you are not the owner of this vote.");
+                }
             }
-
-            _voteService.HandleEvent(new DescriptionAddedEvent(vote.GetId(), description));
-            vote = _voteService.GetVote(name);
-            await ReplyAsync($"Vote has been updated\n" +
-                $"{vote.GetInformation()}");
-        }
-
-        [Command("addtime")]
-        [Summary("Add time to the vote")]
-        public async Task AddTimeAsync([Summary("Name of the vote")] string name,
-            [Summary("Minutes to add")] int minutes)
-        {
-            var vote = _voteService.GetVote(name);
-            if (vote == null)
+            else
             {
-                await ReplyAsync($"There is no vote with that name");
-                return;
+                await ReplyAsync($"There is no active vote with that name");
             }
-
-            if (!vote.IsOwner(Context.User.Id))
-            {
-                await ReplyAsync($"{Context.User.Mention} you are not the owner of this vote");
-                return;
-            }
-
-            _voteService.HandleEvent(new TimeAddedEvent(vote.GetId(), minutes));
-            vote = _voteService.GetVote(name);
-            await ReplyAsync($"Vote has been updated\n" +
-                $"{vote.GetInformation()}");
         }
     }
 }
